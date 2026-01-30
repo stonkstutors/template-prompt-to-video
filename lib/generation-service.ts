@@ -1,26 +1,52 @@
-import { z } from "zod";
 import { promises as fs } from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
-import { zodToJsonSchema } from "zod-to-json-schema";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { CharacterAlignmentResponseModel } from "@elevenlabs/elevenlabs-js/api";
 
 export const IMAGE_WIDTH = 1024;
 export const IMAGE_HEIGHT = 1792;
 
-export const StoryScript = z.object({
-  text: z.string(),
-});
+// JSON schemas for OpenAI structured output
+const StoryScriptSchema = {
+  type: "object",
+  properties: {
+    text: { type: "string" },
+  },
+  required: ["text"],
+  additionalProperties: false,
+};
 
-export const StoryWithImages = z.object({
-  result: z.array(
-    z.object({
-      text: z.string(),
-      imageDescription: z.string(),
-    })
-  ),
-});
+const StoryWithImagesSchema = {
+  type: "object",
+  properties: {
+    result: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          imageDescription: { type: "string" },
+        },
+        required: ["text", "imageDescription"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["result"],
+  additionalProperties: false,
+};
+
+interface StoryScript {
+  text: string;
+}
+
+interface StoryWithImages {
+  result: Array<{
+    text: string;
+    imageDescription: string;
+  }>;
+}
 
 export interface ContentItemWithDetails {
   text: string;
@@ -76,12 +102,10 @@ export type ProgressCallback = (step: string, progress: number, detail?: string)
 
 export async function openaiStructuredCompletion<T>(
   prompt: string,
-  schema: z.ZodType<T>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  jsonSchema: Record<string, any>,
   apiKey: string
 ): Promise<T> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const jsonSchema = zodToJsonSchema(schema) as any;
-
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -95,12 +119,7 @@ export async function openaiStructuredCompletion<T>(
         type: "json_schema",
         json_schema: {
           name: "response",
-          schema: {
-            type: jsonSchema.type || "object",
-            properties: jsonSchema.properties,
-            required: jsonSchema.required,
-            additionalProperties: jsonSchema.additionalProperties ?? false,
-          },
+          schema: jsonSchema,
           strict: true,
         },
       },
@@ -116,8 +135,7 @@ export async function openaiStructuredCompletion<T>(
     throw new Error("No content in OpenAI response");
   }
 
-  const parsed = JSON.parse(content);
-  return schema.parse(parsed);
+  return JSON.parse(content) as T;
 }
 
 export async function generateAiImage({
@@ -374,7 +392,7 @@ export async function generateVideo(
    Result result without any formatting and title, as one continuous text. 
    Skip new lines.`;
 
-  const storyRes = await openaiStructuredCompletion(storyPrompt, StoryScript, openaiApiKey);
+  const storyRes = await openaiStructuredCompletion<StoryScript>(storyPrompt, StoryScriptSchema, openaiApiKey);
   onProgress("story", 100, "Historia gerada!");
 
   onProgress("descriptions", 0, "Gerando descricoes de imagens...");
@@ -398,9 +416,9 @@ export async function generateVideo(
   ${storyRes.text}
   </story>`;
 
-  const storyWithImagesRes = await openaiStructuredCompletion(
+  const storyWithImagesRes = await openaiStructuredCompletion<StoryWithImages>(
     descriptionPrompt,
-    StoryWithImages,
+    StoryWithImagesSchema,
     openaiApiKey
   );
   onProgress("descriptions", 100, "Descricoes geradas!");
